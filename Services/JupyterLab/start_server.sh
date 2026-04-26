@@ -13,7 +13,6 @@ jupyter-lab \
     --ServerApp.token="$JUPYTER_TOKEN" \
     --ServerApp.tornado_settings="{'headers': {'Content-Security-Policy': 'frame-ancestors *'}}" \
     --ServerApp.cookie_options="{'SameSite': 'None', 'Secure': True}" \
-    --ServerApp.disable_check_xsrf=True \
     --LabApp.news_url=None \
     --LabApp.check_for_updates_class="jupyterlab.NeverCheckForUpdate" \
     --notebook-dir=$NOTEBOOK_DIR

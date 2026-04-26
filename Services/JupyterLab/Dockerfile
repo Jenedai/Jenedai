@@ -76,6 +76,8 @@ RUN --mount=target=/root/on_startup.sh,source=on_startup.sh,readwrite \
 	bash /root/on_startup.sh
 
 RUN mkdir /data && chown user:user /data
+COPY workspace/ /data/workspace/
+COPY workspace/FilesAreNotPersistent.md /data/FilesAreNotPersistent.md
 
 #######################################
 # End root user section

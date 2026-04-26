@@ -27,39 +27,43 @@ else:
 
     # Récupérer les variables d'environnement depuis le .env
     load_dotenv(env_path, override=True)
-    project_name = os.getenv("ProjectName")
-    environment = os.getenv("Environment")
-    services_names_str = os.getenv("ServicesNames")
-    github_url = os.getenv("GitHubURL")
-    supabase_url = os.getenv("SupabaseURL")
-    prefect_url = os.getenv("PrefectURL")
-    neon_url = os.getenv("NeonURL")
+    project_name = os.getenv("ProjectName", "N/A")
+    environment = os.getenv("Environment", "N/A")
+    services_names_str = os.getenv("ServicesNames", "")
 
-    # Parser les ServicesNames (format CSV)
+    # Parser les ServicesNames (format CSV) et conserver uniquement les services renseignés
     services_names = [s.strip() for s in services_names_str.split(",") if s.strip()]
 
-    # Charger les icones depuis icons.json
+    # Charger les icones et les config JSON de service/external/api
     @st.cache_data
-    def load_service_icons():
-        """Charger les icones depuis le fichier icons.json"""
-        icons_path = os.path.join(os.path.dirname(parent_dir), "icons.json")
+    def load_json_file(filename, default=None):
+        # .config dans le même dossier que streamlit_app.py (Services/Streamlit/src/.config)
+        config_path = os.path.join(script_dir, ".config", filename)
         try:
-            with open(icons_path, 'r') as f:
+            with open(config_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except FileNotFoundError:
-            # Fallback si icons.json n'existe pas
-            return {
-                "Airflow": "https://cdn.jsdelivr.net/gh/devicons/devicon/icons/apacheairflow/apacheairflow-original.svg",
-                "MLflow": "https://cdn.simpleicons.org/mlflow",
-                "JupyterLab": "https://cdn.jsdelivr.net/gh/devicons/devicon/icons/jupyter/jupyter-original.svg",
-                "Streamlit": "https://cdn.jsdelivr.net/gh/devicons/devicon/icons/streamlit/streamlit-original.svg",
-                "n8n": "https://cdn.simpleicons.org/n8n",
-                "Gradio": "https://cdn.simpleicons.org/gradio",
-                "EvidentlyAI": "https://cdn.simpleicons.org/evidentlyai",
-                "ClickHouse": "https://cdn.simpleicons.org/clickhouse"
-            }
+            return default if default is not None else {}
 
-    SERVICE_ICONS = load_service_icons()
+    SERVICES_CONFIG = load_json_file("services_config.json", {"services": []})
+    EXTERNAL_SERVICES_CONFIG = load_json_file("external_services_config.json", {"external_services": []})
+    APIS_CONFIG = load_json_file("apis_config.json", {"apis": []})
+
+    # Charger les APIs depuis la configuration JSON uniquement
+    api_items = APIS_CONFIG.get("apis", [])
+
+    # Préparer les ressources externes depuis la configuration JSON
+    external_sources = []
+    for cfg in EXTERNAL_SERVICES_CONFIG.get("external_services", []):
+        env_url = os.getenv(cfg.get("env_key", ""), "")
+        url = env_url or cfg.get("url", "")
+        if url:
+            external_sources.append({
+                "name": cfg.get("name", ""),
+                "url": url,
+                "icon": cfg.get("icon", "https://cdn.simpleicons.org/link"),
+                "description": cfg.get("description", "")
+            })
 
     # En-tête
     st.title("🚀 Infrastructure Dashboard")
@@ -76,22 +80,26 @@ else:
         with col3:
             st.metric("Services", len(services_names))
         with col4:
-            external_count = sum([bool(x) for x in [github_url, supabase_url, prefect_url]])
+            external_count = len(external_sources)
             st.metric("Ressources Ext.", external_count)
 
     # Section Services avec icones officielles
     st.subheader("📦 Services Disponibles")
 
-    if services_names:
-        cols = st.columns(8)
+    if not services_names:
+        st.info("ℹ️ Aucun service configuré dans ServicesNames du .env")
+    else:
+        cols_count = min(8, max(1, len(services_names)))
+        cols = st.columns(cols_count)
         for idx, service in enumerate(services_names):
-            col = cols[idx % 8]
+            service_cfg = next((s for s in SERVICES_CONFIG.get("services", []) if s.get("name") == service), {})
+            display_name = service_cfg.get("display_name", service)
+            icon_url = service_cfg.get("icon", "")
+            hf_url = service_cfg.get("repo_path_template", "https://huggingface.co/spaces/{project}/{service}/tree/main").format(project=project_name, service=service)
+            hf_space_url = service_cfg.get("space_url_template", "https://{project}-{service}.hf.space/").format(project=project_name, service=service)
+
+            col = cols[idx % cols_count]
             with col:
-                hf_url = f"https://huggingface.co/spaces/{project_name}/{service}/tree/main"
-                hf_space_url = f"https://{project_name}-{service}.hf.space/"
-                icon_url = SERVICE_ICONS.get(service, "")
-                
-                # Bouton avec icone officielle
                 st.markdown(f"""
                 <div style="
                     display: flex;
@@ -109,7 +117,7 @@ else:
                     <div style="width: 60px; height: 60px; margin-bottom: 10px; display: flex; align-items: center; justify-content: center;">
                         <img src="{icon_url}" style="max-width: 100%; max-height: 100%; object-fit: contain; filter: brightness(0) invert(1);">
                     </div>
-                    <h4 style="margin: 10px 0; font-size: 16px;">{service}</h4>
+                    <h4 style="margin: 10px 0; font-size: 16px;">{display_name}</h4>
                     <p style="margin: 5px 0; font-size: 12px; opacity: 0.9;"><a href="{hf_url}" target="_blank" style="color: white; text-decoration: underline;">HuggingFace Space</a></p>
                     <a href="{hf_space_url}" target="_blank" style="
                         display: inline-block;
@@ -130,113 +138,166 @@ else:
     # Section Ressources Externes
     st.subheader("🔐 Ressources Externes")
 
-    col1, col2, col3, col4 = st.columns(4)
+    if not external_sources:
+        st.info("❌ Aucune ressource externe configurée dans .env ou external_services_config.json")
+    else:
+        cols = st.columns(len(external_sources))
+        for idx, service in enumerate(external_sources):
+            col = cols[idx % len(cols)]
+            with col:
+                st.markdown(f"""
+                <div style="
+                    padding: 14px;
+                    border-radius: 10px;
+                    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+                    color: white;
+                    text-align: center;
+                    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+                ">
+                    <img src="{service['icon']}" alt="Icône {service['name']}" style="width: 24px; height: 24px; margin-bottom: 6px;" />
+                    <h5 style="margin: 6px 0 4px; font-size: 14px;">{service['name']}</h5>
+                    <p style="font-size: 11px; word-break: break-all; margin-bottom: 8px;">{service['description']}</p>
+                    <a href="{service['url']}" target="_blank" role="button" aria-label="Ouvrir {service['name']}" style="
+                        display: inline-flex;
+                        align-items: center;
+                        justify-content: center;
+                        padding: 6px 12px;
+                        background-color: white;
+                        color: #f5576c;
+                        text-decoration: none;
+                        border-radius: 6px;
+                        font-weight: 700;
+                        font-size: 11px;
+                    ">Ouvrir ↗</a>
+                </div>
+                """, unsafe_allow_html=True)
 
-    if github_url:
-        with col1:
+    st.markdown("---")
+
+    # Section APIs (fichier de config apis_config.json)
+    st.subheader("🧩 APIs disponibles")
+
+    if not api_items:
+        st.info("ℹ️ Aucune API configurée dans apis_config.json")
+    else:
+        for api in api_items:
+            icon = api.get('icon', 'https://cdn.simpleicons.org/api')
+            name = api.get('name', '')
+            url = api.get('url', '')
+            desc = api.get('description', '')
             st.markdown(f"""
             <div style="
-                padding: 20px;
+                display: flex;
+                gap: 10px;
+                padding: 14px;
                 border-radius: 12px;
-                background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+                background: linear-gradient(135deg, #43c6ac 0%, #191654 100%);
                 color: white;
-                text-align: center;
-                box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            ">
-                <h4 style="margin-top: 0;">🐙 GitHub</h4>
-                <p style="font-size: 12px; word-break: break-all;">{github_url}</p>
-                <a href="{github_url}" target="_blank" style="
-                    display: inline-block;
-                    padding: 8px 16px;
-                    background-color: white;
-                    color: #f5576c;
+                box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+                margin-bottom: 10px;
+                transition: transform 0.2s;
+            " onmouseover="this.style.transform='scale(1.02)'" onmouseout="this.style.transform='scale(1)'">
+                <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
+                    <img src="{icon}" alt="Icône de {name}" aria-hidden="false" style="width: 24px; height: 24px;" />
+                    <div style="min-width: 0;">
+                        <div style="font-size: 14px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{name}</div>
+                        <div style="font-size: 12px; opacity: 0.95; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{desc}</div>
+                        <div style="font-size: 10px; opacity: 0.8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{url}</div>
+                    </div>
+                </div>
+                <a href="{url}" target="_blank" role="button" aria-label="Ouvrir {name}" style="
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 6px;
+                    padding: 8px 14px;
+                    background: white;
+                    color: #191654;
                     text-decoration: none;
-                    border-radius: 6px;
-                    font-weight: bold;
+                    border-radius: 8px;
                     font-size: 12px;
-                ">Ouvrir →</a>
+                    font-weight: 700;
+                    box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+                ">Ouvrir ↗</a>
             </div>
             """, unsafe_allow_html=True)
 
-    if supabase_url:
-        with col2:
-            st.markdown(f"""
-            <div style="
-                padding: 20px;
-                border-radius: 12px;
-                background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
-                color: white;
-                text-align: center;
-                box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            ">
-                <h4 style="margin-top: 0;">🗄️ Supabase</h4>
-                <p style="font-size: 12px; word-break: break-all;">{supabase_url}</p>
-                <a href="{supabase_url}" target="_blank" style="
-                    display: inline-block;
-                    padding: 8px 16px;
-                    background-color: white;
-                    color: #00f2fe;
-                    text-decoration: none;
-                    border-radius: 6px;
-                    font-weight: bold;
-                    font-size: 12px;
-                ">Ouvrir →</a>
-            </div>
-            """, unsafe_allow_html=True)
+    st.markdown("---")
+    # Section Data Monitoring
+    st.subheader("📊 Data Monitoring")
 
-    if prefect_url:
-        with col3:
-            st.markdown(f"""
-            <div style="
-                padding: 20px;
-                border-radius: 12px;
-                background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);
-                color: white;
-                text-align: center;
-                box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            ">
-                <h4 style="margin-top: 0;">🪣 Prefect</h4>
-                <p style="font-size: 12px; word-break: break-all;">{prefect_url}</p>
-                <a href="{prefect_url}" target="_blank" style="
-                    display: inline-block;
-                    padding: 8px 16px;
-                    background-color: white;
-                    color: #38f9d7;
-                    text-decoration: none;
-                    border-radius: 6px;
-                    font-weight: bold;
-                    font-size: 12px;
-                ">Ouvrir →</a>
-            </div>
-            """, unsafe_allow_html=True)
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("📈 Plotly Visualisation", key="plotly_btn"):
+            st.session_state.show_plotly = not st.session_state.get('show_plotly', False)
+    with col2:
+        st.markdown("[📊 Grafana Dashboard](https://jenedai.grafana.net/public-dashboards/23995dd111fa41d7b5d4739ae33a36a9)", unsafe_allow_html=True)
 
-    if neon_url := os.getenv("NeonURL"):
-        with col4:
-            st.markdown(f"""
-            <div style="
-                padding: 20px;
-                border-radius: 12px;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: white;
-                text-align: center;
-                box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            ">
-                <h4 style="margin-top: 0;">🗄️ NeonDB</h4>
-                <p style="font-size: 12px; word-break: break-all;">{neon_url}</p>
-                <a href="{neon_url}" target="_blank" style="
-                    display: inline-block;
-                    padding: 8px 16px;
-                    background-color: white;
-                    color: #764ba2;
-                    text-decoration: none;
-                    border-radius: 6px;
-                    font-weight: bold;
-                    font-size: 12px;
-                ">Ouvrir →</a>
-            </div>
-            """, unsafe_allow_html=True)
+    if st.session_state.get('show_plotly', False):
+        with st.expander("Visualisation des Prédictions avec Plotly", expanded=True):
+            # Code pour la visualisation
+            import plotly.express as px
+            from sqlalchemy import create_engine
+            import pandas as pd
 
-    if not any([github_url, supabase_url, prefect_url, neon_url]):
-        st.info("❌ Aucune ressource externe configurée (GitHub, S3, PostgreSQL, Prefect, NeonDB)")
+            st.write("🔗 Connexion à la base de données...")
+
+            try:
+                engine = create_engine("postgresql://neondb_user:npg_zwgR0x6XNkcT@ep-dark-frost-agd5milg-pooler.c-2.eu-central-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require")
+                query = "SELECT * FROM model_predictions ORDER BY prediction_timestamp ASC"
+                df = pd.read_sql(query, engine)
+                st.success(f"✅ Données récupérées : {len(df)} lignes")
+
+                if not df.empty:
+                    df["abs_error"] = abs(df["ground_truth"] - df["prediction"])
+
+                    # Graphique 1: Ligne réel vs prédiction
+                    fig = px.line(
+                        df,
+                        x="prediction_timestamp",
+                        y=["ground_truth", "prediction"],
+                        labels={
+                            "value": "Consommation énergétique",
+                            "prediction_timestamp": "Timestamp",
+                            "variable": "Type"
+                        },
+                        title="Consommation énergétique : Réel vs Prédiction"
+                    )
+                    fig.update_traces(
+                        hovertemplate="<br>".join([
+                            "Timestamp: %{x}",
+                            "Type: %{legendgroup}",
+                            "Valeur: %{y}",
+                            "Erreur absolue: %{customdata[0]}"
+                        ]),
+                        customdata=df[["abs_error"]].values
+                    )
+                    fig.update_layout(hovermode="x unified")
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    # Graphique 2: Scatter plot
+                    fig2 = px.scatter(
+                        df,
+                        x="ground_truth",
+                        y="prediction",
+                        size="abs_error",
+                        color="abs_error",
+                        hover_data=["prediction_timestamp", "entity_id", "run_id"],
+                        labels={"ground_truth": "Valeur réelle", "prediction": "Prédiction", "abs_error": "Erreur absolue"},
+                        title="Valeurs réelles vs Prédictions"
+                    )
+                    fig2.add_shape(
+                        type="line",
+                        x0=df["ground_truth"].min(),
+                        y0=df["ground_truth"].min(),
+                        x1=df["ground_truth"].max(),
+                        y1=df["ground_truth"].max(),
+                        line=dict(color="red", dash="dash")
+                    )
+                    st.plotly_chart(fig2, use_container_width=True)
+                else:
+                    st.warning("Aucune donnée trouvée dans la table model_predictions.")
+            except Exception as e:
+                st.error(f"Erreur lors de la récupération des données : {e}")
 
     st.markdown("---")
